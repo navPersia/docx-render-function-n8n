@@ -3,6 +3,8 @@ import os
 import re
 import tempfile
 from datetime import datetime, timedelta, timezone
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 import azure.functions as func
 
@@ -47,15 +49,18 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 def render_docx(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Lazy imports so function discovery does not fail at startup
-        import requests
         from azure.storage.blob import BlobServiceClient, BlobSasPermissions, generate_blob_sas
         from docxtpl import DocxTemplate, InlineImage
         from docx.shared import Mm
 
         def download_file(url: str, timeout: int = 30) -> bytes:
-            resp = requests.get(url, timeout=timeout)
-            resp.raise_for_status()
-            return resp.content
+            try:
+                with urlopen(url, timeout=timeout) as resp:
+                    return resp.read()
+            except HTTPError as exc:
+                raise RuntimeError(f"Failed to download {url}: HTTP {exc.code}") from exc
+            except URLError as exc:
+                raise RuntimeError(f"Failed to download {url}: {exc.reason}") from exc
 
         def upload_bytes_to_blob(
             blob_service_client,
