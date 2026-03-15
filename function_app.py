@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import sys
 import tempfile
 from datetime import datetime
 from urllib.error import HTTPError, URLError
@@ -38,8 +39,40 @@ def safe_get(d, *keys, default=""):
 
 @app.route(route="health", methods=["GET"])
 def health(req: func.HttpRequest) -> func.HttpResponse:
+    checks = {
+        "cffi_backend": False,
+        "azure_storage_blob": False,
+        "docxtpl": False,
+    }
+    errors = {}
+
+    try:
+        import _cffi_backend  # noqa: F401
+        checks["cffi_backend"] = True
+    except Exception as exc:
+        errors["cffi_backend"] = str(exc)
+
+    try:
+        import azure.storage.blob  # noqa: F401
+        checks["azure_storage_blob"] = True
+    except Exception as exc:
+        errors["azure_storage_blob"] = str(exc)
+
+    try:
+        import docxtpl  # noqa: F401
+        checks["docxtpl"] = True
+    except Exception as exc:
+        errors["docxtpl"] = str(exc)
+
     return func.HttpResponse(
-        json.dumps({"status": "ok"}),
+        json.dumps(
+            {
+                "status": "ok",
+                "python_version": sys.version,
+                "dependency_checks": checks,
+                "dependency_errors": errors,
+            }
+        ),
         status_code=200,
         mimetype="application/json",
     )
