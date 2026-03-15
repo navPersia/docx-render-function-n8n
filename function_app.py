@@ -49,9 +49,23 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 def render_docx(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Lazy imports so function discovery does not fail at startup
-        from azure.storage.blob import BlobServiceClient
-        from docxtpl import DocxTemplate, InlineImage
-        from docx.shared import Mm
+        try:
+            from azure.storage.blob import BlobServiceClient
+            from docxtpl import DocxTemplate, InlineImage
+            from docx.shared import Mm
+        except ImportError as exc:
+            return func.HttpResponse(
+                json.dumps(
+                    {
+                        "error": (
+                            f"Missing runtime dependency: {exc}. "
+                            "Ensure requirements are installed in the deployed package."
+                        )
+                    }
+                ),
+                status_code=500,
+                mimetype="application/json",
+            )
 
         def download_file(url: str, timeout: int = 30) -> bytes:
             try:
