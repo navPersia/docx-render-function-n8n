@@ -37,6 +37,7 @@ jobs:
       - name: Verify packaged dependencies
         run: |
           test -d .python_packages/lib/site-packages/azure/storage/blob
+          ls .python_packages/lib/site-packages/_cffi_backend*.so
 
       # Optional: Add step to run tests here
 

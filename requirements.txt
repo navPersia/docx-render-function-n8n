@@ -3,3 +3,5 @@ azure-identity
 azure-storage-blob
 docxtpl
 python-docx
+cffi>=1.16,<2
+cryptography>=42,<45
