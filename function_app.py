@@ -49,6 +49,8 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 def render_docx(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Lazy imports so function discovery does not fail at startup
+        from azure.identity import DefaultAzureCredential
+        from azure.storage.blob import BlobServiceClient
         from docxtpl import DocxTemplate, InlineImage
         from docx.shared import Mm
 
@@ -60,6 +62,20 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 raise RuntimeError(f"Failed to download {url}: HTTP {exc.code}") from exc
             except URLError as exc:
                 raise RuntimeError(f"Failed to download {url}: {exc.reason}") from exc
+
+        def upload_bytes_to_blob(
+            blob_service_client: BlobServiceClient,
+            container_name: str,
+            blob_name: str,
+            data: bytes,
+            content_type: str,
+        ) -> str:
+            blob_client = blob_service_client.get_blob_client(
+                container=container_name,
+                blob=blob_name,
+            )
+            blob_client.upload_blob(data, overwrite=True, content_type=content_type)
+            return blob_client.url
 
         def build_context(payload: dict, doc, chart_path: str = None) -> dict:
             source_url = payload.get("source_url", "")
@@ -122,6 +138,7 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
         template_url = payload.get("template_url")
         chart_url = payload.get("chart_url")
         meta = payload.get("meta", {}) or {}
+        output_container = payload.get("output_container") or os.getenv("OUTPUT_CONTAINER", "n8n-assesment")
 
         if not template_url:
             return func.HttpResponse(
@@ -130,8 +147,23 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json",
             )
 
+        storage_account_url = os.getenv("STORAGE_ACCOUNT_URL")
+        if not storage_account_url:
+            storage_account_name = os.getenv("STORAGE_ACCOUNT_NAME")
+            if storage_account_name:
+                storage_account_url = f"https://{storage_account_name}.blob.core.windows.net"
+
+        if not storage_account_url:
+            return func.HttpResponse(
+                json.dumps(
+                    {"error": "Set STORAGE_ACCOUNT_URL or STORAGE_ACCOUNT_NAME in Function App settings"}
+                ),
+                status_code=500,
+                mimetype="application/json",
+            )
+
         client_name = meta.get("client_name") or "client"
-        output_blob_name = f"{sanitize_filename(client_name)}-bpr.docx"
+        output_blob_name = f"{sanitize_filename(client_name)}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.docx"
 
         template_bytes = download_file(template_url)
         chart_bytes = download_file(chart_url) if chart_url else None
@@ -156,14 +188,30 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
 
+        blob_service_client = BlobServiceClient(
+            account_url=storage_account_url,
+            credential=DefaultAzureCredential(),
+        )
+        blob_url = upload_bytes_to_blob(
+            blob_service_client=blob_service_client,
+            container_name=output_container,
+            blob_name=output_blob_name,
+            data=output_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
         return func.HttpResponse(
-            body=output_bytes,
+            json.dumps(
+                {
+                    "status": "ok",
+                    "file_name": output_blob_name,
+                    "container": output_container,
+                    "blob_url": blob_url,
+                    "source_url": payload.get("source_url", ""),
+                }
+            ),
             status_code=200,
-            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": f'attachment; filename="{output_blob_name}"',
-                "X-Source-Url": payload.get("source_url", ""),
-            },
+            mimetype="application/json",
         )
 
     except Exception as exc:
