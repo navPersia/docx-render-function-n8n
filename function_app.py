@@ -1,5 +1,7 @@
 import json
+import glob
 import os
+import platform
 import re
 import sys
 import tempfile
@@ -35,6 +37,20 @@ def safe_get(d, *keys, default=""):
         if current is None:
             return default
     return current
+
+
+def dependency_debug_info() -> dict:
+    candidates = []
+    for base in sys.path:
+        if not base:
+            continue
+        candidates.extend(glob.glob(os.path.join(base, "_cffi_backend*")))
+    return {
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "sys_path_count": len(sys.path),
+        "cffi_backend_candidates": candidates[:20],
+    }
 
 
 @app.route(route="health", methods=["GET"])
@@ -83,17 +99,18 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Lazy imports so function discovery does not fail at startup
         try:
-            from azure.storage.blob import BlobServiceClient
             from docxtpl import DocxTemplate, InlineImage
             from docx.shared import Mm
         except ImportError as exc:
+            debug = dependency_debug_info()
             return func.HttpResponse(
                 json.dumps(
                     {
                         "error": (
                             f"Missing runtime dependency: {exc}. "
                             "Ensure requirements are installed in the deployed package."
-                        )
+                        ),
+                        "debug": debug,
                     }
                 ),
                 status_code=500,
@@ -110,7 +127,7 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 raise RuntimeError(f"Failed to download {url}: {exc.reason}") from exc
 
         def upload_bytes_to_blob(
-            blob_service_client: BlobServiceClient,
+            blob_service_client,
             container_name: str,
             blob_name: str,
             data: bytes,
@@ -227,6 +244,23 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 output_bytes = f.read()
 
         if storage_connection_string:
+            try:
+                from azure.storage.blob import BlobServiceClient
+            except ImportError as exc:
+                debug = dependency_debug_info()
+                return func.HttpResponse(
+                    json.dumps(
+                        {
+                            "error": (
+                                f"Missing runtime dependency: {exc}. "
+                                "Blob SDK import failed."
+                            ),
+                            "debug": debug,
+                        }
+                    ),
+                    status_code=500,
+                    mimetype="application/json",
+                )
             blob_service_client = BlobServiceClient.from_connection_string(storage_connection_string)
         else:
             if not storage_account_url:
@@ -244,15 +278,18 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 )
 
             try:
+                from azure.storage.blob import BlobServiceClient
                 from azure.identity import DefaultAzureCredential
-            except ImportError:
+            except ImportError as exc:
+                debug = dependency_debug_info()
                 return func.HttpResponse(
                     json.dumps(
                         {
                             "error": (
-                                "Managed identity auth requires azure-identity. "
-                                "Install it in deployment or set AZURE_STORAGE_CONNECTION_STRING."
-                            )
+                                f"Missing runtime dependency: {exc}. "
+                                "Managed identity path requires azure-identity and blob SDK."
+                            ),
+                            "debug": debug,
                         }
                     ),
                     status_code=500,
