@@ -2,7 +2,7 @@ import json
 import os
 import re
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
@@ -49,7 +49,6 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 def render_docx(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Lazy imports so function discovery does not fail at startup
-        from azure.storage.blob import BlobServiceClient, BlobSasPermissions, generate_blob_sas
         from docxtpl import DocxTemplate, InlineImage
         from docx.shared import Mm
 
@@ -61,36 +60,6 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 raise RuntimeError(f"Failed to download {url}: HTTP {exc.code}") from exc
             except URLError as exc:
                 raise RuntimeError(f"Failed to download {url}: {exc.reason}") from exc
-
-        def upload_bytes_to_blob(
-            blob_service_client,
-            container_name: str,
-            blob_name: str,
-            data: bytes,
-            content_type: str,
-        ) -> str:
-            blob_client = blob_service_client.get_blob_client(
-                container=container_name,
-                blob=blob_name,
-            )
-            blob_client.upload_blob(data, overwrite=True, content_type=content_type)
-            return blob_client.url
-
-        def generate_read_sas_url(
-            account_name: str,
-            account_key: str,
-            container_name: str,
-            blob_name: str,
-        ) -> str:
-            sas = generate_blob_sas(
-                account_name=account_name,
-                container_name=container_name,
-                blob_name=blob_name,
-                account_key=account_key,
-                permission=BlobSasPermissions(read=True),
-                expiry=datetime.now(timezone.utc) + timedelta(days=7),
-            )
-            return f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas}"
 
         def build_context(payload: dict, doc, chart_path: str = None) -> dict:
             source_url = payload.get("source_url", "")
@@ -161,25 +130,6 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json",
             )
 
-        output_container = os.getenv("OUTPUT_CONTAINER", "generated-reports")
-        storage_connection_string = os.getenv("AzureWebJobsStorage")
-        storage_account_name = os.getenv("STORAGE_ACCOUNT_NAME")
-        storage_account_key = os.getenv("STORAGE_ACCOUNT_KEY")
-
-        if not storage_connection_string:
-            return func.HttpResponse(
-                json.dumps({"error": "AzureWebJobsStorage setting is missing"}),
-                status_code=500,
-                mimetype="application/json",
-            )
-
-        if not storage_account_name or not storage_account_key:
-            return func.HttpResponse(
-                json.dumps({"error": "STORAGE_ACCOUNT_NAME and STORAGE_ACCOUNT_KEY settings are required"}),
-                status_code=500,
-                mimetype="application/json",
-            )
-
         client_name = meta.get("client_name") or "client"
         output_blob_name = f"{sanitize_filename(client_name)}-bpr.docx"
 
@@ -206,40 +156,14 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
 
-        blob_service_client = BlobServiceClient.from_connection_string(storage_connection_string)
-        container_client = blob_service_client.get_container_client(output_container)
-        try:
-            container_client.create_container()
-        except Exception:
-            pass
-
-        blob_url = upload_bytes_to_blob(
-            blob_service_client=blob_service_client,
-            container_name=output_container,
-            blob_name=output_blob_name,
-            data=output_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        )
-
-        download_url = generate_read_sas_url(
-            account_name=storage_account_name,
-            account_key=storage_account_key,
-            container_name=output_container,
-            blob_name=output_blob_name,
-        )
-
         return func.HttpResponse(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "file_name": output_blob_name,
-                    "blob_url": blob_url,
-                    "download_url": download_url,
-                    "source_url": payload.get("source_url", ""),
-                }
-            ),
+            body=output_bytes,
             status_code=200,
-            mimetype="application/json",
+            mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f'attachment; filename="{output_blob_name}"',
+                "X-Source-Url": payload.get("source_url", ""),
+            },
         )
 
     except Exception as exc:
