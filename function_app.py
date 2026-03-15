@@ -3,8 +3,6 @@ import os
 import re
 import tempfile
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
-from urllib.parse import urlparse
 
 import azure.functions as func
 import requests
@@ -53,7 +51,10 @@ def upload_bytes_to_blob(
     data: bytes,
     content_type: str,
 ) -> str:
-    blob_client = blob_service_client.get_blob_client(container=container_name, blob=blob_name)
+    blob_client = blob_service_client.get_blob_client(
+        container=container_name,
+        blob=blob_name,
+    )
     blob_client.upload_blob(data, overwrite=True, content_type=content_type)
     return blob_client.url
 
@@ -75,7 +76,7 @@ def generate_read_sas_url(
     return f"https://{account_name}.blob.core.windows.net/{container_name}/{blob_name}?{sas}"
 
 
-def build_context(payload: dict, doc: DocxTemplate, chart_path: str | None) -> dict:
+def build_context(payload: dict, doc: DocxTemplate, chart_path: str = None) -> dict:
     source_url = payload.get("source_url", "")
     summary = payload.get("assessment_summary", {}) or {}
     meta = payload.get("meta", {}) or {}
@@ -93,10 +94,8 @@ def build_context(payload: dict, doc: DocxTemplate, chart_path: str | None) -> d
         "ConsultantName": consultant_name,
         "Version": version,
         "SourceUrl": source_url,
-
         "ExecutiveSummary": safe_get(summary, "executive_summary", "summary", default=""),
         "OverallReading": safe_get(summary, "executive_summary", "overall_reading", default=""),
-
         "ChartImage": chart_image,
         "WheelSummary": safe_get(summary, "wheel_interpretation", "summary", default=""),
         "WheelBalanceObservations": to_bullets(
@@ -106,21 +105,18 @@ def build_context(payload: dict, doc: DocxTemplate, chart_path: str | None) -> d
             safe_get(summary, "wheel_interpretation", "imbalance_observations", default=[])
         ),
         "WheelHowToUse": safe_get(summary, "wheel_interpretation", "how_to_use", default=""),
-
         "ObservableStrengths": to_bullets(
             safe_get(summary, "key_insights", "observable_strengths", default=[])
         ),
         "UnderdevelopedAreas": to_bullets(
             safe_get(summary, "key_insights", "underdeveloped_or_uncertain_areas", default=[])
         ),
-
         "MissingInformation": to_bullets(
             safe_get(summary, "unknowns", "missing_information", default=[])
         ),
         "FollowUpQuestions": to_bullets(
             safe_get(summary, "unknowns", "follow_up_questions", default=[])
         ),
-
         "DiscussionPoints": to_bullets(
             safe_get(summary, "next_steps", "discussion_points", default=[])
         ),
@@ -128,6 +124,15 @@ def build_context(payload: dict, doc: DocxTemplate, chart_path: str | None) -> d
             safe_get(summary, "next_steps", "discovery_actions", default=[])
         ),
     }
+
+
+@app.route(route="health", methods=["GET"])
+def health(req: func.HttpRequest) -> func.HttpResponse:
+    return func.HttpResponse(
+        json.dumps({"status": "ok"}),
+        status_code=200,
+        mimetype="application/json",
+    )
 
 
 @app.route(route="render-docx", methods=["POST"])
@@ -172,8 +177,7 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     client_name = meta.get("client_name") or "client"
-    safe_name = sanitize_filename(client_name)
-    output_blob_name = f"{safe_name}-bpr.docx"
+    output_blob_name = f"{sanitize_filename(client_name)}-bpr.docx"
 
     try:
         template_bytes = download_file(template_url)
@@ -181,8 +185,8 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             template_path = os.path.join(tmpdir, "template.docx")
-            chart_path = os.path.join(tmpdir, "chart.png") if chart_bytes else None
             output_path = os.path.join(tmpdir, output_blob_name)
+            chart_path = os.path.join(tmpdir, "chart.png") if chart_bytes else None
 
             with open(template_path, "wb") as f:
                 f.write(template_bytes)
@@ -201,7 +205,6 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
 
         blob_service_client = BlobServiceClient.from_connection_string(storage_connection_string)
 
-        # Ensure container exists
         container_client = blob_service_client.get_container_client(output_container)
         try:
             container_client.create_container()
@@ -216,7 +219,7 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
-        signed_url = generate_read_sas_url(
+        download_url = generate_read_sas_url(
             account_name=storage_account_name,
             account_key=storage_account_key,
             container_name=output_container,
@@ -229,7 +232,7 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                     "status": "ok",
                     "file_name": output_blob_name,
                     "blob_url": blob_url,
-                    "download_url": signed_url,
+                    "download_url": download_url,
                     "source_url": payload.get("source_url", ""),
                 }
             ),
