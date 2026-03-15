@@ -49,7 +49,6 @@ def health(req: func.HttpRequest) -> func.HttpResponse:
 def render_docx(req: func.HttpRequest) -> func.HttpResponse:
     try:
         # Lazy imports so function discovery does not fail at startup
-        from azure.identity import DefaultAzureCredential
         from azure.storage.blob import BlobServiceClient
         from docxtpl import DocxTemplate, InlineImage
         from docx.shared import Mm
@@ -147,20 +146,12 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
                 mimetype="application/json",
             )
 
+        storage_connection_string = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
         storage_account_url = os.getenv("STORAGE_ACCOUNT_URL")
         if not storage_account_url:
             storage_account_name = os.getenv("STORAGE_ACCOUNT_NAME")
             if storage_account_name:
                 storage_account_url = f"https://{storage_account_name}.blob.core.windows.net"
-
-        if not storage_account_url:
-            return func.HttpResponse(
-                json.dumps(
-                    {"error": "Set STORAGE_ACCOUNT_URL or STORAGE_ACCOUNT_NAME in Function App settings"}
-                ),
-                status_code=500,
-                mimetype="application/json",
-            )
 
         client_name = meta.get("client_name") or "client"
         output_blob_name = f"{sanitize_filename(client_name)}-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}.docx"
@@ -188,10 +179,43 @@ def render_docx(req: func.HttpRequest) -> func.HttpResponse:
             with open(output_path, "rb") as f:
                 output_bytes = f.read()
 
-        blob_service_client = BlobServiceClient(
-            account_url=storage_account_url,
-            credential=DefaultAzureCredential(),
-        )
+        if storage_connection_string:
+            blob_service_client = BlobServiceClient.from_connection_string(storage_connection_string)
+        else:
+            if not storage_account_url:
+                return func.HttpResponse(
+                    json.dumps(
+                        {
+                            "error": (
+                                "Set AZURE_STORAGE_CONNECTION_STRING, or set STORAGE_ACCOUNT_URL/"
+                                "STORAGE_ACCOUNT_NAME and deploy with azure-identity installed."
+                            )
+                        }
+                    ),
+                    status_code=500,
+                    mimetype="application/json",
+                )
+
+            try:
+                from azure.identity import DefaultAzureCredential
+            except ImportError:
+                return func.HttpResponse(
+                    json.dumps(
+                        {
+                            "error": (
+                                "Managed identity auth requires azure-identity. "
+                                "Install it in deployment or set AZURE_STORAGE_CONNECTION_STRING."
+                            )
+                        }
+                    ),
+                    status_code=500,
+                    mimetype="application/json",
+                )
+
+            blob_service_client = BlobServiceClient(
+                account_url=storage_account_url,
+                credential=DefaultAzureCredential(),
+            )
         blob_url = upload_bytes_to_blob(
             blob_service_client=blob_service_client,
             container_name=output_container,
